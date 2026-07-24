@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Operational heartbeats & local runtime markers
+.worker_heartbeat
+*.pid
+
+# Storage & Data
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Pytest & coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Temporary, swap & backup files
+*.tmp
+*.bak
+*.swp
+*~
+temp_mock/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Ingestion, output & visual capture caches
+uploads/
+reports/
+graphs/
+screenshots/
