@@ -1,0 +1,182 @@
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Relational Database — MySQL 8.0
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: ekn-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ekn_root_secure_pw_2026}
+      MYSQL_DATABASE: ekn_db
+      MYSQL_USER: ekn_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ekn_password_secure_2026}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - ekn-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-ekn_root_secure_pw_2026}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # 2. Vector Database — ChromaDB Client-Server Service
+  # ---------------------------------------------------------------------------
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    container_name: ekn-chromadb
+    restart: unless-stopped
+    environment:
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chroma_data:/chroma/chroma
+    networks:
+      - ekn-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 3. FastAPI Backend API Server
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ekn-backend
+    restart: unless-stopped
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      BACKEND_API_URL: http://backend:8000
+      MYSQL_URL: mysql+pymysql://ekn_user:${MYSQL_PASSWORD:-ekn_password_secure_2026}@mysql:3306/ekn_db
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      CHROMA_COLLECTION_NAME: ekn_document_chunks
+      STORAGE_LOCAL_ROOT: /app/data/storage
+      UPLOAD_DIR: /app/data/storage/uploads
+      PROCESSED_DIR: /app/data/storage/processed
+      REPORTS_DIR: /app/data/storage/reports
+      TEMP_UPLOAD_DIR: /app/data/storage/temp
+      APP_BASE_URL: http://localhost:8501
+      ALLOWED_ORIGINS: http://localhost:8501,http://127.0.0.1:8501,http://frontend:8501
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855}
+      JWT_ALGORITHM: HS256
+      JWT_ISSUER: ekn-platform
+      JWT_AUDIENCE: ekn-client
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      EKN_DEMO_MODE: ${EKN_DEMO_MODE:-false}
+    volumes:
+      - storage_data:/app/data/storage
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    networks:
+      - ekn-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # 4. Background Ingestion Worker Daemon
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ekn-worker
+    restart: unless-stopped
+    command: ["python", "-m", "backend.worker"]
+    environment:
+      ENVIRONMENT: production
+      MYSQL_URL: mysql+pymysql://ekn_user:${MYSQL_PASSWORD:-ekn_password_secure_2026}@mysql:3306/ekn_db
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      CHROMA_COLLECTION_NAME: ekn_document_chunks
+      STORAGE_LOCAL_ROOT: /app/data/storage
+      UPLOAD_DIR: /app/data/storage/uploads
+      PROCESSED_DIR: /app/data/storage/processed
+      REPORTS_DIR: /app/data/storage/reports
+      TEMP_UPLOAD_DIR: /app/data/storage/temp
+      WORKER_POLL_INTERVAL_SECONDS: 2.0
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      EKN_DEMO_MODE: ${EKN_DEMO_MODE:-false}
+    volumes:
+      - storage_data:/app/data/storage
+    depends_on:
+      backend:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    networks:
+      - ekn-net
+
+  # ---------------------------------------------------------------------------
+  # 5. Streamlit Enterprise Frontend
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ekn-frontend
+    restart: unless-stopped
+    command: ["streamlit", "run", "frontend/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.enableCORS", "false"]
+    environment:
+      BACKEND_API_URL: http://backend:8000
+      APP_BASE_URL: http://localhost:8501
+      EKN_DEMO_MODE: ${EKN_DEMO_MODE:-false}
+    ports:
+      - "${FRONTEND_PORT:-8501}:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - ekn-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+# -----------------------------------------------------------------------------
+# Persistent Storage Volumes
+# -----------------------------------------------------------------------------
+volumes:
+  mysql_data:
+    name: ekn_mysql_data
+  chroma_data:
+    name: ekn_chroma_data
+  storage_data:
+    name: ekn_storage_data
+
+# -----------------------------------------------------------------------------
+# Isolated Internal Docker Network
+# -----------------------------------------------------------------------------
+networks:
+  ekn-net:
+    name: ekn_network
+    driver: bridge
