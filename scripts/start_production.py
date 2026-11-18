@@ -141,7 +141,7 @@ def start_processes(backend_port: int = 8000, frontend_port: int = 8501, host: s
         "--server.headless", "true",
         "--server.port", str(frontend_port),
         "--server.address", host,
-        "--server.enableCORS", "false",
+        "--server.enableCORS", "true",
     ]
     print(f"[EKN Supervisor] Launching Streamlit UI on {host}:{frontend_port} (XSRF protection enabled)...")
     procs["frontend"] = subprocess.Popen(frontend_cmd, cwd=str(ROOT_DIR), env=env)
