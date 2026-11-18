@@ -10,8 +10,10 @@ font = "sans serif"
 headless = true
 runOnSave = true
 port = 8501
-enableCORS = false
+enableCORS = true
 enableXsrfProtection = true
+corsAllowedOrigins = ["https://pdf-intelligence-production-b9c654bf.up.railway.app"]
+allowedHosts = ["pdf-intelligence-production-b9c654bf.up.railway.app"]
 
 [browser]
 gatherUsageStats = false
