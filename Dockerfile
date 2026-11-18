@@ -35,10 +35,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies first for layer caching
+# Install Python dependencies first for layer caching.
+# Railway runs this workload on CPU: install the official CPU-only PyTorch wheel
+# before Sentence Transformers so pip reuses it instead of pulling CUDA/NVIDIA wheels.
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt && \
+    python -c "import torch; assert torch.version.cuda is None, f'Expected CPU-only PyTorch, got CUDA={torch.version.cuda}'; print('Verified CPU-only PyTorch', torch.__version__)"
 
 # Create deterministic model cache directory and bake dense embedding model into image
 RUN mkdir -p /app/model_cache && \
