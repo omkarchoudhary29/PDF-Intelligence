@@ -82,19 +82,26 @@ def seed_demo_accounts() -> Dict[str, Any]:
         update_env_variable(env_path, "DEMO_EMPLOYEE_PASSWORD", emp_pw)
 
     with get_db_session() as db:
-        # Locate designated demonstration workspace
+        # Locate or create a dedicated, isolated public demonstration workspace.
+        # Never fall back to an arbitrary active customer workspace: demo credentials
+        # are public by design and must not grant access to a real tenant's documents.
         demo_ws = None
         if settings.demo_workspace_id:
             demo_ws = db.query(Workspace).filter(Workspace.id == settings.demo_workspace_id).first()
         if not demo_ws:
-            demo_ws = db.query(Workspace).filter(Workspace.slug == "aerospace-engineering").first()
+            demo_ws = db.query(Workspace).filter(Workspace.slug == "ekn-public-demo").first()
         if not demo_ws:
-            demo_ws = db.query(Workspace).filter(Workspace.name.ilike("%aerospace%")).first()
-        if not demo_ws:
-            demo_ws = db.query(Workspace).filter(Workspace.is_active.is_(True)).first()
-
-        if not demo_ws:
-            raise RuntimeError("Designated demonstration workspace could not be located in database.")
+            workspace_values = {
+                "name": "EKN Public Demo",
+                "slug": "ekn-public-demo",
+                "description": "Isolated public evaluation workspace. Do not store confidential documents here.",
+                "is_active": True,
+            }
+            if settings.demo_workspace_id:
+                workspace_values["id"] = settings.demo_workspace_id
+            demo_ws = Workspace(**workspace_values)
+            db.add(demo_ws)
+            db.flush()
 
         # --- 1. Demo Administrator ---
         existing_admin = db.query(User).filter(User.email == admin_email).first()
@@ -217,5 +224,5 @@ if __name__ == "__main__":
     result = seed_demo_accounts()
     print("Demo accounts seeded successfully:")
     print(f"Workspace: {result['workspace_name']} ({result['workspace_id']})")
-    print(f"Administrator: {result['admin_email']} | PW: {result['admin_password']}")
-    print(f"Employee: {result['employee_email']} | PW: {result['employee_password']}")
+    print(f"Administrator: {result['admin_email']} | password configured in Railway variables")
+    print(f"Employee: {result['employee_email']} | password configured in Railway variables")
