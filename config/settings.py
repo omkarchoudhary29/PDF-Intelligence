@@ -1,5 +1,7 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -102,8 +104,9 @@ class Settings(BaseSettings):
     min_password_length: int = 12
     allowed_origins: str = "http://localhost:8501,http://127.0.0.1:8501"
 
-    # Local Demonstration Mode
+    # Local Demonstration Mode & Credential Pre-filling
     ekn_demo_mode: bool = True
+    enable_demo_credentials: Optional[bool] = None
     demo_admin_password: Optional[str] = None
     demo_employee_password: Optional[str] = None
     demo_workspace_id: Optional[str] = "dc5d9139-f381-4818-ab26-c2e878997b4d"
@@ -115,19 +118,72 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    @model_validator(mode="after")
+    def resolve_storage_paths(self) -> "Settings":
+        """Align sub-storage directories with storage_local_root if custom root is specified."""
+        root = Path(self.storage_local_root)
+        if self.upload_dir == "./data/storage/uploads" and self.storage_local_root != "./data/storage":
+            self.upload_dir = str(root / "uploads")
+        if self.temp_upload_dir == "./data/storage/temp" and self.storage_local_root != "./data/storage":
+            self.temp_upload_dir = str(root / "temp")
+        if self.processed_dir == "./data/storage/processed" and self.storage_local_root != "./data/storage":
+            self.processed_dir = str(root / "processed")
+        if self.reports_dir == "./data/storage/reports" and self.storage_local_root != "./data/storage":
+            self.reports_dir = str(root / "reports")
+        return self
+
+    @property
+    def effective_enable_demo_credentials(self) -> bool:
+        """Determine whether 1-click demo login buttons should be displayed.
+
+        - If explicitly set via ENABLE_DEMO_CREDENTIALS, uses that value.
+        - Otherwise: True in development/evaluation, False in production.
+        """
+        if self.enable_demo_credentials is not None:
+            return bool(self.enable_demo_credentials)
+        return self.environment != "production"
+
+    @property
+    def effective_ekn_demo_mode(self) -> bool:
+        """Return whether EKN demo mode is active.
+        In production, demo mode is strictly disabled unless explicitly overridden.
+        """
+        if self.environment == "production":
+            return False
+        return self.ekn_demo_mode
+
     @property
     def is_mysql_configured(self) -> bool:
         """Check whether a non-empty MySQL connection URL has been provided."""
-        return bool(self.mysql_url and self.mysql_url.strip())
+        if self.mysql_url and self.mysql_url.strip():
+            return True
+        if self.database_url and any(proto in self.database_url.lower() for proto in ("mysql", "mariadb")):
+            return True
+        return False
 
     @property
     def effective_database_url(self) -> Optional[str]:
-        """Return the effective database URL (mysql_url, database_url, or fallback)."""
+        """Return the effective database URL (mysql_url, database_url, or fallback),
+        normalized with the PyMySQL driver scheme for SQLAlchemy compatibility.
+        """
+        raw_url: Optional[str] = None
         if self.mysql_url and self.mysql_url.strip():
-            return self.mysql_url.strip()
-        if self.database_url and self.database_url.strip():
-            return self.database_url.strip()
-        return None
+            raw_url = self.mysql_url.strip()
+        elif self.database_url and self.database_url.strip():
+            raw_url = self.database_url.strip()
+
+        if not raw_url:
+            return None
+
+        # Railway and standard clouds inject mysql:// or mysql+mysqldb://
+        # Rewrite to mysql+pymysql:// for PyMySQL driver
+        if raw_url.startswith("mysql://"):
+            return "mysql+pymysql://" + raw_url[len("mysql://"):]
+        if raw_url.startswith("mysql+mysqldb://"):
+            return "mysql+pymysql://" + raw_url[len("mysql+mysqldb://"):]
+        if raw_url.startswith("mariadb://"):
+            return "mariadb+pymysql://" + raw_url[len("mariadb://"):]
+        return raw_url
 
     @property
     def effective_allowed_origins(self) -> list[str]:

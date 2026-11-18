@@ -101,7 +101,7 @@ def _render_role_selection(client: Optional[BackendAPIClient] = None) -> None:
                 st.session_state["auth_portal"] = "admin"
                 st.rerun()
 
-            if settings.ekn_demo_mode:
+            if settings.effective_enable_demo_credentials and settings.demo_admin_password:
                 if st.button("⚡ Quick Demo Sign In (1-Click)", type="secondary", use_container_width=True, key="role_quick_demo_admin"):
                     if client:
                         try:
@@ -148,7 +148,7 @@ def _render_role_selection(client: Optional[BackendAPIClient] = None) -> None:
                 st.session_state["auth_portal"] = "employee"
                 st.rerun()
 
-            if settings.ekn_demo_mode:
+            if settings.effective_enable_demo_credentials and settings.demo_employee_password:
                 if st.button("⚡ Quick Demo Sign In (1-Click)", type="primary", use_container_width=True, key="role_quick_demo_emp"):
                     if client:
                         try:
@@ -183,8 +183,8 @@ def _render_role_selection(client: Optional[BackendAPIClient] = None) -> None:
         unsafe_allow_html=True,
     )
 
-    # Optional local demo accounts expander (only shown when demo mode is active)
-    if settings.ekn_demo_mode:
+    # Optional local demo accounts expander (only shown when demo credentials are enabled)
+    if settings.effective_enable_demo_credentials:
         _, exp_col, _ = st.columns([1, 6.6, 1])
         with exp_col:
             st.markdown("<div style='margin-top: 2.0rem;'></div>", unsafe_allow_html=True)
@@ -268,14 +268,14 @@ def _render_admin_portal(client: BackendAPIClient) -> None:
         # --- ADMIN TAB 1: SIGN IN ---
         if chosen_admin_tab == "Sign In":
             settings = get_settings()
-            if settings.ekn_demo_mode:
+            if settings.effective_enable_demo_credentials and settings.demo_admin_password:
                 if not st.session_state.get("admin_signin_email"):
                     st.session_state["admin_signin_email"] = "admin.demo@example.com"
                 if not st.session_state.get("admin_signin_password"):
                     st.session_state["admin_signin_password"] = settings.demo_admin_password
 
             with st.container(border=True):
-                if settings.ekn_demo_mode:
+                if settings.effective_enable_demo_credentials and settings.demo_admin_password:
                     st.markdown(
                         """
                         <div style="background: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 8px; padding: 0.65rem 0.85rem; margin-bottom: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
@@ -486,7 +486,7 @@ def _render_employee_portal(client: BackendAPIClient) -> None:
     _, center_col, _ = st.columns([1, 2.6, 1])
 
     with center_col:
-        tab_title = "Create Employee Account" if settings.ekn_demo_mode else "Join Company"
+        tab_title = "Create Employee Account" if settings.effective_ekn_demo_mode else "Join Company"
         emp_options = ["Sign In", tab_title]
         emp_tab_param = st.query_params.get("emp_tab", "").lower()
         if emp_tab_param in ("create_account", "signup", "register"):
@@ -507,14 +507,14 @@ def _render_employee_portal(client: BackendAPIClient) -> None:
 
         # --- EMPLOYEE TAB 1: SIGN IN ---
         if chosen_emp_tab == "Sign In":
-            if settings.ekn_demo_mode:
+            if settings.effective_enable_demo_credentials and settings.demo_employee_password:
                 if not st.session_state.get("emp_signin_email"):
                     st.session_state["emp_signin_email"] = "employee.demo@example.com"
                 if not st.session_state.get("emp_signin_password"):
                     st.session_state["emp_signin_password"] = settings.demo_employee_password
 
             with st.container(border=True):
-                if settings.ekn_demo_mode:
+                if settings.effective_enable_demo_credentials and settings.demo_employee_password:
                     st.markdown(
                         """
                         <div style="background: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 8px; padding: 0.65rem 0.85rem; margin-bottom: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
