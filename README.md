@@ -649,7 +649,122 @@ When deploying to a public or corporate network:
 
 ---
 
-## 19. Troubleshooting Guide
+## 19. Railway Deployment Preparation
+
+EKN has been specifically architected and hardened for automated GitHub-connected deployment to **Railway** using a validated three-service topology.
+
+### Approved Three-Service Architecture
+
+```
++-----------------------------------------------------------------------------------+
+| Railway Project Environment                                                       |
+|                                                                                   |
+|  [Service 1: EKN Application] (Docker Container)                                  |
+|    • Public Web Ingress: Streamlit Enterprise UI (Port: $PORT on 0.0.0.0)         |
+|    • Internal API: FastAPI REST Server (Port: 8000 on 127.0.0.1 loopback only)    |
+|    • Background Ingestion: Worker Daemon (Supervised child process)               |
+|    • Mounts Persistent Volume: /app/data/storage (uploads, processed, reports)    |
+|                                                                                   |
+|  [Service 2: Managed MySQL Database] (Railway Official Plugin)                    |
+|    • Relational store: users, workspaces, chunks, knowledge graph, jobs           |
+|    • Private Network Connection: ${{MySQL.MYSQL_URL}}                             |
+|                                                                                   |
+|  [Service 3: ChromaDB Vector Database] (chromadb/chroma:0.5.23)                   |
+|    • Private Vector Service: chromadb.railway.internal:8000                       |
+|    • Dedicated Persistent Volume: /chroma/chroma                                  |
++-----------------------------------------------------------------------------------+
+```
+
+### Application Process Design & Supervisor
+
+Due to Railway persistent volumes attaching strictly to a single service, FastAPI, the Background Ingestion Worker, and Streamlit are co-located in **Service 1: EKN Application**:
+- **Process Supervisor (`scripts/start_production.py`):**
+  - Boots internal FastAPI on `127.0.0.1:8000` (inaccessible to public internet).
+  - Waits for `/health` liveness probe.
+  - Spawns background worker daemon (`backend.worker`).
+  - Boots Streamlit UI on `0.0.0.0:$PORT` with XSRF protection enabled.
+  - Monitors all three child processes. If the worker encounters a transient error, the supervisor automatically respawns it using recurring capped exponential backoff without interrupting healthy user traffic on Streamlit or FastAPI.
+  - Gracefully forwards `SIGTERM` and `SIGINT` signals on container redeployments to ensure clean shutdown without orphan processes.
+- **Runtime Entrypoint (`scripts/docker_entrypoint.sh`):**
+  - Handles Railway volume mount ownership (`RAILWAY_RUN_UID=0` or root mounting).
+  - Initializes top-level directory ownership for `appuser` (UID 1000) using a sentinel file, completely avoiding slow recursive file traversal on restarts.
+  - Safely steps down from root to `appuser` via `gosu`.
+
+### Required Railway Environment Variables
+
+Configure these variables in the **Variables** tab of the EKN Application service in the Railway dashboard:
+
+| Variable | Required | Value / Format | Purpose |
+|---|:---:|---|---|
+| `ENVIRONMENT` | **Yes** | `production` | Enables strict production security assertions (enforces 32-char JWT secret, remote Chroma). |
+| `DEBUG` | **Yes** | `false` | Disables debug logs and exception tracebacks in HTTP responses. |
+| `EKN_DEMO_MODE` | **Yes** | `false` | Disables demonstration joining code bypass. |
+| `ENABLE_DEMO_CREDENTIALS` | **Yes** | `false` | Disables 1-click demo login buttons and credential pre-fills. |
+| `JWT_SECRET_KEY` | **Yes** | Cryptographically random string (min 32 chars) | Signs HS256 authentication tokens. |
+| `MYSQL_URL` | **Yes** | `${{MySQL.MYSQL_URL}}` (or `${{DATABASE_URL}}`) | Reference to Railway MySQL plugin; normalized automatically to PyMySQL. |
+| `CHROMA_HOST` | **Yes** | `chromadb.railway.internal` (or private service domain) | Hostname of Railway ChromaDB service. |
+| `CHROMA_PORT` | **Yes** | `8000` | Port of ChromaDB service. |
+| `CHROMA_COLLECTION_NAME`| No | `ekn_document_chunks` | Name of Chroma vector collection. |
+| `BACKEND_API_URL` | **Yes** | `http://127.0.0.1:8000` | Loopback URL used by Streamlit (do not append `/api/v1`). |
+| `STORAGE_LOCAL_ROOT` | **Yes** | `/app/data/storage` | Root path of mounted Railway Persistent Volume. |
+| `GEMINI_API_KEY` | **Yes** | `AIzaSy...` | Outbound Google Gemini API key for synthesis and extraction. |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Synthesis model identifier. |
+
+*Note: `PORT` is automatically injected by Railway at container runtime. Do not manually define `PORT`.*
+
+### Persistent Storage Paths
+
+A Railway Persistent Volume must be attached to the EKN Application service and mounted at `/app/data/storage`:
+- `/app/data/storage/uploads`: Original uploaded customer and company PDF files.
+- `/app/data/storage/processed`: Extracted document JSONL records and page preview PNG images.
+- `/app/data/storage/reports`: Compiled executive knowledge dossier PDFs.
+- `/app/data/storage/temp`: Temporary PDF chunk buffers (cleaned up automatically).
+- `/app/model_cache`: Dense embedding model (`sentence-transformers/all-MiniLM-L6-v2`) is pre-baked into the Docker image build layer, eliminating runtime cold-start download delays.
+
+### Healthcheck Configuration
+
+In the Railway dashboard **Settings** tab for the EKN Application service:
+- **Healthcheck Path:** `/_stcore/health`
+- **Healthcheck Timeout:** `180` seconds (allows initial database table migrations and model warmup).
+
+### Local Docker Build & Verification Instructions
+
+To verify the production Docker packaging locally before Railway deployment:
+```bash
+# 1. Build the production Docker image
+docker build -t ekn-production:latest .
+
+# 2. Run the container locally (simulating Railway environment)
+docker run -it --rm \
+  -p 8501:8501 \
+  -e PORT=8501 \
+  -e ENVIRONMENT=development \
+  -e STORAGE_LOCAL_ROOT=/app/data/storage \
+  ekn-production:latest
+
+# 3. Test Streamlit healthcheck
+curl -f http://localhost:8501/_stcore/health
+```
+
+### Railway Dashboard Configuration Required in Phase 3
+
+During Phase 3 deployment, configure the following via the Railway web dashboard:
+1. **Provision MySQL:** Click **+ New** -> **Database** -> **Add MySQL**.
+2. **Provision ChromaDB:** Click **+ New** -> **Docker Image** -> enter `chromadb/chroma:0.5.23`. Enable Private Networking and attach a volume mounted at `/chroma/chroma`.
+3. **Provision EKN Application:** Connect this GitHub repository (`omkarchoudhary29/PDF-Intelligence`).
+   - In **Settings**: Set Healthcheck Path to `/_stcore/health`.
+   - In **Volumes**: Add persistent volume mounted at `/app/data/storage`.
+   - In **Variables**: Configure the environment variables specified in the matrix above.
+4. **Networking:** In the EKN Application service, click **Generate Domain** under Public Networking to expose the Streamlit UI to the web.
+
+### Deployment Status & Limitations
+
+- **Current Status:** **Deployment-Ready (Phase 2 Complete).** All application configurations, multi-process supervisors, database URL normalizers, non-root permissions, and health probes have been verified.
+- **Verification Note:** The application is prepared for deployment. Final public availability will occur once services are provisioned in the Railway dashboard in Phase 3.
+
+---
+
+## 20. Troubleshooting Guide
 
 | Issue | Root Cause | Resolution |
 |---|---|---|
@@ -663,7 +778,7 @@ When deploying to a public or corporate network:
 
 ---
 
-## 20. Current Project Status & Limitations
+## 21. Current Project Status & Limitations
 
 ### Verified & Implemented Capabilities
 - Dual portal authentication with Argon2id and JWT session rotation.
@@ -685,7 +800,7 @@ When deploying to a public or corporate network:
 
 ---
 
-## 21. License & Acknowledgements
+## 22. License & Acknowledgements
 
 ### License
 License not yet specified. Enterprise Proprietary. All rights reserved.

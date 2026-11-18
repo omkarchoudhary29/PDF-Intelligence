@@ -1,7 +1,10 @@
 # ==============================================================================
-# Enterprise Knowledge Navigator (EKN) — Unified Multi-Service Docker Image
+# Enterprise Knowledge Navigator (EKN) — Unified Production Container Image
 # ==============================================================================
-# Serves as the base image for backend, worker, and frontend services.
+# Packages the complete platform:
+# - FastAPI internal REST API (loopback only)
+# - Background Ingestion Worker daemon
+# - Streamlit Enterprise UI frontend
 # ==============================================================================
 
 FROM python:3.12-slim
@@ -9,16 +12,21 @@ FROM python:3.12-slim
 # Prevent Python from writing .pyc files and buffer stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/app/model_cache \
+    TRANSFORMERS_CACHE=/app/model_cache \
+    SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 
 # Install system dependencies:
-# - build-essential: C extension compilation if needed
+# - build-essential: C extension compilation
 # - curl: Container health checks
 # - tesseract-ocr, tesseract-ocr-eng: Selective OCR for scanned PDF pages
 # - libgl1, libglib2.0-0: PyMuPDF graphics dependencies
+# - gosu: Safe privilege step-down from root to appuser after volume mounting
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    gosu \
     tesseract-ocr \
     tesseract-ocr-eng \
     libgl1 \
@@ -32,12 +40,18 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application modules and source code
+# Create deterministic model cache directory and bake dense embedding model into image
+RUN mkdir -p /app/model_cache && \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+# Copy application modules, configuration, scripts, and Streamlit theme
 COPY backend/ ./backend/
 COPY config/ ./config/
 COPY frontend/ ./frontend/
+COPY .streamlit/ ./.streamlit/
+COPY scripts/ ./scripts/
 
-# Create internal data directories
+# Create internal runtime storage directories
 RUN mkdir -p /app/data/storage/uploads \
              /app/data/storage/processed \
              /app/data/storage/reports \
@@ -46,12 +60,14 @@ RUN mkdir -p /app/data/storage/uploads \
 
 # Create non-root system user for secure container execution
 RUN useradd -u 1000 -m appuser && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app && \
+    chmod +x /app/scripts/docker_entrypoint.sh /app/scripts/start_production.sh /app/scripts/start_production.py
 
-USER appuser
-
-# Expose ports: 8000 (FastAPI), 8501 (Streamlit)
+# Expose ports: 8000 (internal FastAPI), 8501 (Streamlit public UI)
 EXPOSE 8000 8501
 
-# Default command: FastAPI backend server
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Entrypoint fixes volume permissions dynamically and drops privileges to appuser
+ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]
+
+# Default command: Multi-process production supervisor
+CMD ["python", "scripts/start_production.py"]

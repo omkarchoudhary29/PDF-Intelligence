@@ -5,6 +5,7 @@ from typing import Generator, Optional, Tuple
 
 import chromadb
 from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -18,6 +19,27 @@ logger = logging.getLogger("ekn.database")
 _engine: Optional[Engine] = None
 _session_factory: Optional[sessionmaker] = None
 _chroma_client: Optional[chromadb.ClientAPI] = None
+
+
+def normalize_database_url(raw_url: str) -> Tuple[URL, str]:
+    """Parse and normalize database connection URL for SQLAlchemy with PyMySQL.
+
+    Uses SQLAlchemy's make_url parser rather than string replacement to preserve
+    percent-encoded credentials, host parameters, and connection options safely.
+
+    Returns:
+        (parsed_url_object, safe_log_string_with_hidden_password)
+    """
+    url_obj = make_url(raw_url)
+    driver = url_obj.drivername.lower()
+
+    if driver in ("mysql", "mysql+mysqldb"):
+        url_obj = url_obj.set(drivername="mysql+pymysql")
+    elif driver in ("mariadb", "mariadb+mysqldb"):
+        url_obj = url_obj.set(drivername="mariadb+pymysql")
+
+    safe_log = url_obj.render_as_string(hide_password=True)
+    return url_obj, safe_log
 
 
 def get_engine() -> Optional[Engine]:
@@ -38,21 +60,24 @@ def get_engine() -> Optional[Engine]:
         return None
 
     try:
-        if url.startswith("sqlite"):
+        url_obj, safe_log_url = normalize_database_url(url)
+
+        if url_obj.drivername.startswith("sqlite"):
             _engine = create_engine(
-                url,
+                url_obj,
                 connect_args={"check_same_thread": False},
                 echo=False,
             )
         else:
             _engine = create_engine(
-                url,
+                url_obj,
                 pool_size=settings.mysql_pool_size,
                 max_overflow=settings.mysql_max_overflow,
                 pool_pre_ping=True,
+                pool_recycle=3600,
                 connect_args={"connect_timeout": settings.mysql_connect_timeout},
             )
-        logger.info("SQLAlchemy database engine initialized successfully for: %s", url.split("@")[-1])
+        logger.info("SQLAlchemy database engine initialized successfully for: %s", safe_log_url)
         try:
             Base.metadata.create_all(bind=_engine)
         except Exception as table_err:
@@ -256,7 +281,8 @@ def get_chroma_client() -> chromadb.ClientAPI:
     """Retrieve or initialize the ChromaDB client.
 
     If chroma_host is configured, connects via HttpClient (client-server topology).
-    Otherwise, initializes a local PersistentClient.
+    In production (ENVIRONMENT=production), remote Chroma is strictly required.
+    In development/testing, falls back to local PersistentClient.
     """
     global _chroma_client
     if _chroma_client is not None:
@@ -264,7 +290,7 @@ def get_chroma_client() -> chromadb.ClientAPI:
 
     settings = get_settings()
 
-    # 1. Client-server HTTP mode (preferred for multi-process / Docker Compose topology)
+    # 1. Client-server HTTP mode (preferred for multi-process / Railway topology)
     if settings.chroma_host and settings.chroma_host.strip():
         host = settings.chroma_host.strip()
         port = settings.chroma_port or 8000
@@ -280,6 +306,16 @@ def get_chroma_client() -> chromadb.ClientAPI:
         except Exception as exc:
             logger.error("Failed to connect to ChromaDB HttpClient at %s:%s: %s", host, port, exc)
             raise RuntimeError(f"ChromaDB connection to {host}:{port} failed: {exc}") from exc
+
+    # Enforce remote ChromaDB configuration in production environment
+    if settings.environment == "production":
+        error_msg = (
+            "ChromaDB configuration error: ENVIRONMENT=production requires a remote "
+            "ChromaDB service (CHROMA_HOST and CHROMA_PORT must be configured). "
+            "Silent fallback to embedded local persistence is prohibited in production."
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     # 2. Local embedded persistent mode (for single-process development and pytest)
     persist_dir = Path(settings.chroma_persist_directory).resolve()
@@ -300,6 +336,10 @@ def check_chroma_connection() -> Tuple[bool, str]:
     Returns:
         (is_ready, status_message)
     """
+    settings = get_settings()
+    if settings.environment == "production" and not (settings.chroma_host and settings.chroma_host.strip()):
+        return False, "Unconfigured: CHROMA_HOST is required in production"
+
     try:
         client = get_chroma_client()
         heartbeat = client.heartbeat()
