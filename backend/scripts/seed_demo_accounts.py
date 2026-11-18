@@ -125,6 +125,16 @@ def seed_demo_accounts() -> Dict[str, Any]:
             db.add(admin_user)
             db.flush()
 
+        # Public demo identities must belong only to the isolated demo workspace.
+        # Remove stale memberships left by any earlier broad fallback seeding.
+        for stale_membership in (
+            db.query(WorkspaceMembership)
+            .filter(WorkspaceMembership.user_id == admin_user.id)
+            .all()
+        ):
+            if stale_membership.workspace_id != demo_ws.id:
+                db.delete(stale_membership)
+
         # Ensure active admin/owner membership in demo workspace
         admin_membership = (
             db.query(WorkspaceMembership)
@@ -167,6 +177,15 @@ def seed_demo_accounts() -> Dict[str, Any]:
             )
             db.add(emp_user)
             db.flush()
+
+        # Keep the public employee demo identity out of customer workspaces.
+        for stale_membership in (
+            db.query(WorkspaceMembership)
+            .filter(WorkspaceMembership.user_id == emp_user.id)
+            .all()
+        ):
+            if stale_membership.workspace_id != demo_ws.id:
+                db.delete(stale_membership)
 
         # Ensure active employee membership in demo workspace
         emp_membership = (
